@@ -5,6 +5,11 @@ import (
 	"unicode/utf8"
 )
 
+var (
+	lowerHex = []rune{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'}
+	upperHex = []rune{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'}
+)
+
 const (
 	QAElideNullBytes   = 0x01
 	QAElideOuterQuotes = 0x02
@@ -59,7 +64,7 @@ func GetTextQuote(s QuotingStyle) rune {
 	}
 }
 
-func QuoteargBufferRestyled(
+func Quote(
 	buffer []rune,
 	arg []rune,
 	style QuotingStyle,
@@ -67,24 +72,18 @@ func QuoteargBufferRestyled(
 	quoteTheseToo uint,
 	leftQuote rune,
 	rightQuote rune,
-) {
-	var pos int
+) []rune {
 	var elideOuterQuotes bool = (flags & QAElideOuterQuotes) != 0
 	var pendingShellEscapeEnd bool
 	var escaping bool
 	var quoteRune rune
 	var backslashEscapes bool
-	var allCAndShellQuoteCompat bool = true
 
 	store := func(c rune) {
-		buffer[pos] = c
-		pos++
+		buffer = append(buffer, c)
 	}
 
 	startESC := func() {
-		if elideOuterQuotes {
-			goto ForceOuterQuotingStyle
-		}
 		escaping = true
 		if style == ShellAlwaysQuotingStyle && !pendingShellEscapeEnd {
 			store('\'')
@@ -159,9 +158,9 @@ func QuoteargBufferRestyled(
 	for i := 0; i < len(arg); i++ {
 		var esc rune
 		var isRightQuote bool
-		var cAndShellQuoteCompat bool
+		escaping = false
 
-		quoteIsNext := arg[i+1] == quoteRune
+		quoteIsNext := len(arg) > i+1 && arg[i+1] == quoteRune
 
 		if backslashEscapes &&
 			style != ShellAlwaysQuotingStyle &&
@@ -177,6 +176,9 @@ func QuoteargBufferRestyled(
 		switch c {
 		case 0x00:
 			if backslashEscapes {
+				if elideOuterQuotes {
+					goto ForceOuterQuotingStyle
+				}
 				startESC()
 				if style != ShellQuotingStyle &&
 					i+1 < len(arg) &&
@@ -189,7 +191,7 @@ func QuoteargBufferRestyled(
 			} else if flags&QAElideNullBytes != 0 {
 				continue
 			}
-			break
+			goto StoreEscape
 		case '?':
 			switch style {
 			case ShellAlwaysQuotingStyle:
@@ -222,7 +224,7 @@ func QuoteargBufferRestyled(
 			default:
 				break
 			}
-			break
+			goto StoreEscape
 		case '\a':
 			esc = 'a'
 			goto CEscape
@@ -257,30 +259,19 @@ func QuoteargBufferRestyled(
 				goto StoreC
 			}
 
-		CAndShellEscape:
-			if style == ShellAlwaysQuotingStyle && elideOuterQuotes {
-				goto ForceOuterQuotingStyle
-			}
-
-		CEscape:
-			if backslashEscapes {
-				c = esc
-				goto StoreEscape
-			}
-			break
+			goto CAndShellEscape
 
 		case '{', '}':
 			if len(arg) != 1 {
-				break
+				goto StoreEscape
 			}
 			fallthrough
 		case '#', '~':
 			if i != 0 {
-				break
+				goto StoreEscape
 			}
 			fallthrough
 		case ' ':
-			cAndShellQuoteCompat = true
 			fallthrough
 		case '!', '"', '$', '&', '(', ')', '*', ';', '<', '=', '>', '[':
 			fallthrough
@@ -288,10 +279,8 @@ func QuoteargBufferRestyled(
 			if style == ShellAlwaysQuotingStyle && elideOuterQuotes {
 				goto ForceOuterQuotingStyle
 			}
-			break
+			goto StoreEscape
 		case '\'':
-			encounteredSingleQuote = true
-			cAndShellQuoteCompat = true
 			if style == ShellAlwaysQuotingStyle {
 				if elideOuterQuotes {
 					goto ForceOuterQuotingStyle
@@ -303,7 +292,7 @@ func QuoteargBufferRestyled(
 				store('\'')
 				pendingShellEscapeEnd = false
 			}
-			break
+			goto StoreC
 		case '%', '+', ',', '-', '.', '/', '0', '1', '2', '3', '4', '5':
 			fallthrough
 		case '6', '7', '8', '9', ':', 'A', 'B', 'C', 'D', 'E', 'F':
@@ -315,64 +304,82 @@ func QuoteargBufferRestyled(
 		case 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n':
 			fallthrough
 		case 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z':
-			cAndShellQuoteCompat = true
-			break
+			goto StoreC
 		default:
-			printable := strconv.IsPrint(c)
-			cAndShellQuoteCompat = printable
-			if backslashEscapes && !printable {
-				startESC()
-				store('x')
+			if backslashEscapes && !strconv.IsPrint(c) {
+				if elideOuterQuotes {
+					goto ForceOuterQuotingStyle
+				}
 				switch {
 				case c < ' ':
-					store(byte(c) >> 4)
-					store(byte(c) & 0xF)
+					startESC()
+					store('x')
+					store(upperHex[byte(c)>>4])
+					store(upperHex[byte(c)&0xF])
 				case c > utf8.MaxRune:
 					c = 0xFFFD
 					fallthrough
 				case c < 0x10000:
+					startESC()
+					store('u')
 					for s := 12; s >= 0; s -= 4 {
-						store(c >> uint(s) & 0xF)
+						store(upperHex[c>>uint(s)&0xF])
 					}
 				default:
+					startESC()
+					store('U')
 					for s := 28; s >= 0; s -= 4 {
-						store(c >> uint(s) & 0xF)
+						store(upperHex[c>>uint(s)&0xF])
 					}
 				}
-				goto StoreC
 			} else if isRightQuote {
 				store('\\')
 				isRightQuote = false
 			}
+		}
+		continue
+	CAndShellEscape:
+		if style == ShellAlwaysQuotingStyle && elideOuterQuotes {
+			goto ForceOuterQuotingStyle
+		}
+
+	CEscape:
+		if backslashEscapes {
+			c = esc
+			goto StoreEscape
+		}
+
+		if !(((backslashEscapes && style != ShellAlwaysQuotingStyle) ||
+			elideOuterQuotes) && !isRightQuote) {
 			goto StoreC
 		}
+
+	StoreEscape:
+		if elideOuterQuotes {
+			goto ForceOuterQuotingStyle
+		}
+		startESC()
+
+	StoreC:
+		endESC()
+		store(c)
+
 	}
 
-	if !(((backslashEscapes && style != ShellAlwaysQuotingStyle) ||
-		elideOuterQuotes) && !isRightQuote) {
-		goto StoreC
+	if quoteRune != 0 && !elideOuterQuotes {
+		store(quoteRune)
 	}
 
-StoreEscape:
-	startESC()
-
-StoreC:
-	endESC()
-	store(c)
-
-	if !cAndShellQuoteCompat {
-		allCAndShellQuoteCompat = false
-	}
-
-	if len == 0 && style == ShellAlwaysQuotingStyle && elideOuterQuotes {
+	if style == ShellAlwaysQuotingStyle && elideOuterQuotes {
 		goto ForceOuterQuotingStyle
 	}
+	return buffer
 
 ForceOuterQuotingStyle:
 	if style == ShellAlwaysQuotingStyle && backslashEscapes {
 		style = ShellEscapeAlwaysQuotingStyle
 	}
-	QuoteargBufferRestyled(
+	return Quote(
 		buffer,
 		arg,
 		style,
