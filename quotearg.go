@@ -65,7 +65,6 @@ func GetTextQuote(s QuotingStyle) rune {
 }
 
 func Quote(
-	buffer []rune,
 	arg []rune,
 	style QuotingStyle,
 	flags int,
@@ -73,6 +72,7 @@ func Quote(
 	leftQuote rune,
 	rightQuote rune,
 ) []rune {
+	var buffer []rune
 	var elideOuterQuotes bool = (flags & QAElideOuterQuotes) != 0
 	var pendingShellEscapeEnd bool
 	var escaping bool
