@@ -380,7 +380,6 @@ ForceOuterQuotingStyle:
 		style = ShellEscapeAlwaysQuotingStyle
 	}
 	return Quote(
-		buffer,
 		arg,
 		style,
 		flags & ^QAElideOuterQuotes,
